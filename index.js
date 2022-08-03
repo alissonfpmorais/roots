@@ -1,49 +1,47 @@
-// Require the framework and instantiate it
-const fastify = require('fastify')({ logger: true });
+const fastify = require('fastify')();
 const app = require('./elm').Elm.Main.init();
 
-const map = new Map();
-const appendReq = (id) => map.set(id.toString(), undefined);
-const setReqResponse = (id, data) => map.set(id, data);
-const getReq = (id) => map.get(id.toString());
-const retrieveReqData = (id) => {
-    return new Promise((resolve) => {
-        const intervalId = setInterval(() => {
-            const reqData = getReq(id);
-            console.log(map);
-            console.log(reqData);
-            if (reqData !== undefined) {
-                clearInterval(intervalId);
-                resolve(reqData);
-            }
-        }, 100);
+const requests = new Map();
+const putRequest = (ownerId, replyFn) => requests.set(ownerId, replyFn);
+const popRequest = (ownerId) => {
+    const replyFn = requests.get(ownerId);
+    requests.delete(ownerId);
+    return replyFn;
+};
+
+const buildOwnerId = () => new Date().getTime().toString();
+const buildConn = (_request) => ({ ownerId: buildOwnerId() });
+const parseInitConn = (conn) => JSON.stringify(conn);
+const parseEndConn = (conn) => JSON.parse(conn);
+const buildReply = (reply, conn) => {
+    console.log(conn);
+    return reply;
+};
+
+fastify.addHook('preHandler', (request, reply, done) => {
+    const initConn = buildConn(request);
+    putRequest(initConn.ownerId, (endConn) => {
+        buildReply(reply, endConn);
+        done();
     });
-}
+    app.ports.get.send(parseInitConn(initConn));
+});
 
-// Declare a route
-fastify.get('*', async (request, reply) => {
-    const timestamp = new Date().getTime();
-    appendReq(timestamp);
+fastify.get('*', async (_request, _reply) => {})
 
-    app.ports.get.send(timestamp + "_" + request.params['*']);
-    const data = await retrieveReqData(timestamp)
-    console.log(data);
-
-    return { data: data };
-})
-
-// Run the server!
 const start = async () => {
     try {
         await fastify.listen({ port: 3001 });
-        app.ports.put.subscribe((r) => {
-            [timestamp, data] = r.split('_');
-            setReqResponse(timestamp.toString(), data);
+        app.ports.put.subscribe((connStr) => {
+            const endConn = parseEndConn(connStr);
+            const replyFn = popRequest(endConn.ownerId);
+            replyFn(endConn);
         });
     } catch (err) {
-        fastify.log.error(err)
+        fastify.log.error(err);
         app.ports.put.unsubscribe();
-        process.exit(1)
+        process.exit(1);
     }
 }
-start()
+
+start().finally();
